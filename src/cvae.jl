@@ -21,8 +21,8 @@ Flux.@functor Reshape ()
 function cVAE(z)
     encoder = Chain(
         Conv((4, 4), 3 => 16, relu, stride=(2, 2)),
-        Conv((4, 4), 16 => 32, relu, stride=(2, 2)),
-        Conv((4, 4), 32 => 128, relu, stride=(2, 2)),
+        Conv((4, 4), 16 => 128, relu, stride=(2, 2)),
+        Conv((4, 4), 128 => 128, relu, stride=(2, 2)),
         Flux.flatten,
         Dense(2048, 256, relu)
     )
@@ -51,7 +51,6 @@ function sample_latent(encoder_μ, encoder_logvar, x; dev=gpu)
     μ = encoder_μ(x)
     logvar = encoder_logvar(x)
     z = μ + dev(randn(Float32, size(μ))) .* exp.(0.5f0 * logvar)
-
     return z, μ, logvar
 end
 
