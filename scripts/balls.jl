@@ -46,7 +46,7 @@ end
 
 @with_kw mutable struct Args
     batchsize::Int = 32
-    z::Int = 10
+    z::Int = 64
 end
 
 args = Args()
@@ -59,13 +59,18 @@ end
 
 xtrain_seq = x_train
 
+xtrain_seq[1]
+
+heatmap(dropmean(xtrain_seq[1][:,:,:,1], 3))
+
+
 x_test = @as xs img_data["test_x"] begin
     process_data(xs, args.batchsize)
     [Array(x) for x in xs]
 end
 
 using Random:shuffle
-x_train = xx
+x_train = x_train |> shuffle
 
 xt = x_test
 # xx = pong_data["obs"][end - num_test + 1:end] |> x -> vcat(x...)
@@ -193,7 +198,7 @@ opt = ADAM(0.01)
 s = Stateful(TriangleExp(λ0=0.00001, λ1=0.002, period=10, γ=0.96))
 # plot(s.schedule.(0:100))
 ##
-KL, LogQP, R = train(model, [x_train, x_test], 2, opt,
+KL, LogQP, R = train(model, [x_train, x_test], 4, opt,
                      hps=hp, schedule_lr=true, scd=s,)
 
 
@@ -221,7 +226,7 @@ plot_output(model, xx[2], "tempus", 1, ind=3)
 ##
 modl = model |> cpu
 encoder_μ, encoder_logvar, decoder = modl
-z, μ, logvar = sample_latent(modl[1:2]..., x_train[1], dev=cpu)
+z, μ, logvar = sample_latent(modl[1:2]..., xtrain_seq[1][2], dev=cpu)
 pred = decoder(z)
 ##
 y = pred[:,:,:,1]
@@ -229,22 +234,17 @@ yimg = colorview(RGB, permutedims(y, [3,1,2]))
 plot(yimg)
 
 ##
-x = x_test[2][:,:,:,2]
+x = xtrain_seq[1][8][:,:,:,1]
 img = colorview(RGB, permutedims(x, [3,1,2]))
 plot(img)
 
 ##
 using BSON
-BSON.@save "saved_models/balls_cvae_z16_4eps_adam_cycled_beta20_v.bson" modl
+BSON.@save "saved_models/balls_cvae_z64_6eps_adam_cycled_beta20_BEST.bson" modl
 
 ##
-
-plot(z')
-
-modelpath = "saved_models/cubes_cvae_z32_5eps_adam_0001_beta1_5.bson"
-BSON.@load modelpath modl
-
-model |> cpu
+# modelpath = "saved_models/cubes_cvae_z32_5eps_adam_0001_beta1_5.bson"
+# BSON.@load modelpath modl
 
 modl = model |> cpu
 encoder_μ, encoder_logvar, decoder = modl
@@ -254,4 +254,137 @@ y = pred[:,:,:,3]
 yimg = colorview(RGB, permutedims(y, [3,1,2]))
 p = plot(yimg)
 
-x_train[1]
+##
+x = vcat(xtrain_seq...)
+function rnn_dataset(net, xs)
+    # zs = [sample_latent(net[1:2]..., k, dev=cpu)[1] for k in xs]
+    eind = findfirst(x -> size(x, 2) < args.batchsize, zs)
+    zt = collect(partition(zs[1:eind - 1], 10))
+
+    ys_orig = [net[3].(k) for k in zt] # decoder
+    Xs = [k[1:end - 1] for k in zt]
+    Ys = [k[2:end] for k in ys_orig]
+
+    return Xs, Ys
+end
+
+X, Y = rnn_dataset(modl, x)
+# model = modl |> gpu
+encoder_μ, encoder_logvar, decoder = model
+
+sizeof(X)
+
+to_img(x) = colorview(RGB, permutedims(x, [3,1,2]))
+
+X[1][1]
+zhat = zRNN(randn(64, 2) |> gpu)
+yhat = decoder(zhat) |> cpu
+
+
+
+
+
+##
+device!(0)
+device_reset!(device())
+Xs = X |> gpu
+Ys = Y |> gpu
+##
+
+using ParameterSchedulers
+using ParameterSchedulers: Scheduler, Stateful, next!
+s = Stateful(TriangleExp(λ0=0.001, λ1=0.2, period=10, γ=0.98))
+
+using BSON
+BSON.@load "saved_models/balls_cvae_z64_6eps_adam_cycled_beta20_BEST.bson" modl
+model = modl |> gpu
+encoder_μ, encoder_logvar, decoder = model
+
+zRNN = Chain(
+    Dense(args.z, 128, relu),
+    RNN(128, 64),
+    Dense(64, args.z),
+    x -> tanh.(x),
+    Dense(args.z, args.z),
+    # x -> 3.0f0 * sin.(x) .+ 1.0f0,
+) |> gpu
+
+norm1(x) = sum(abs2, x)
+
+function rnn_loss(rnn, decoder, x, y; λ=0.01f0, dev=gpu)
+    # Flux.reset!(rnn)
+    batchsize = 32
+    ẑ = rnn.(x) # .+ [0.001f0 * dev(randn(8, batchsize)) for _ in 1:9]
+    ŷ = decoder.(ẑ)
+    reg_penalty = λ * norm(Flux.params(rnn))
+    # sum(norm1, Flux.params(zRNN))
+    loss = mean(Flux.binarycrossentropy.(ŷ, y, agg=sum) ./ batchsize)
+    loss + reg_penalty
+end
+
+model = modl |> gpu
+vae = model
+encoder_μ, encoder_logvar, decoder = vae
+
+opt = ADAM(0.01)
+ps = Flux.params(zRNN)
+
+function train_rnn(rnn, decoder, data, num_epochs, opt; sched=false)
+    ps = Flux.params(rnn)
+    for epoch in 1:num_epochs
+        progress_tracker = Progress(length(data), 1, "Training epoch $epoch:")
+
+        for (i, (x, y)) in enumerate(data)
+            loss, back = pullback(ps) do
+                rnn_loss(rnn, decoder, x, y)
+            end
+            gradients = back(1f0)
+            Flux.update!(opt, ps, gradients)
+            if isnan(loss)
+                println("NaN encountered")
+                break
+            end
+            next!(progress_tracker, showvalues=[(:loss, loss)])
+        end
+    end
+    println("Training done!")
+end
+
+## ==== Train RNN
+train_rnn(zRNN, decoder, zip(Xs, Ys), 1, opt)
+##
+
+
+x = Xs[1]
+y = Ys[1]
+function sample(net, x; len=20, dev=gpu)
+    batchsize = size(x)[end]
+    y = net(x) # .+ 0.01f0 * dev(randn(8, batchsize))
+    ys = []
+    push!(ys, y)
+    for i in 2:len
+        ŷ = net(y) # .+ 0.01f0 * dev(randn(8, batchsize))
+        y = ŷ
+        push!(ys, ŷ)
+    end
+    ys
+end
+##
+BSON.@load  "saved_models/rnn_adam001_128_32_adjustout_noise001.bson" rnn
+zRNN = gpu(rnn)
+
+##
+dys = Ys |> cpu
+dy = cat(mean.(dys[1], dims=3)..., dims=3)
+quick_anim(permutedims(dy[:,:,:,1], [3,1,2]))
+
+Flux.reset!(zRNN)
+out = cat(sample(zRNN, Xs[1][1])..., dims=3) |> cpu
+heatmap(out[:,1,:])
+
+preds0 = decoder.(sample(zRNN, Xs[1][1]))
+preds = cat(mean.(preds0, dims=3)..., dims=3) |> cpu
+
+quick_anim(permutedims(preds[:,:,:,1], [3,1,2]))
+
+plot(out[:,2,:]', legend=false)

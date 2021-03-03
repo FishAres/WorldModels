@@ -15,8 +15,7 @@ theme(:juno)
 includet(srcdir("utils.jl"))
 includet(srcdir("cvae.jl"))
 
-# @load datadir("exp_pro", "cube_train.jld2")
-@load datadir("exp_pro", "shape_train.jld2") shape_data
+@load datadir("exp_pro", "cube_train.jld2") cube_data
 
 using Flux, Zygote
 using Flux:stack, update!
@@ -39,13 +38,13 @@ args = Args()
 
 num_test = 4 # number of validation samples
 
-x_train = shape_data["obs"][1:end - num_test] |> x -> vcat(x...) |> shuffle
-x_test = shape_data["obs"][end - num_test + 1:end] |> x -> vcat(x...) |> shuffle
+x_train = cube_data["obs"][1:end - num_test] |> x -> vcat(x...) |> shuffle
+x_test = cube_data["obs"][end - num_test + 1:end] |> x -> vcat(x...) |> shuffle
 
-y_train = shape_data["next_obs"][1:end - num_test] |> x -> vcat(x...) |> shuffle
-y_test = shape_data["next_obs"][end - num_test + 1:end] |> x -> vcat(x...) |> shuffle
+y_train = cube_data["next_obs"][1:end - num_test] |> x -> vcat(x...) |> shuffle
+y_test = cube_data["next_obs"][end - num_test + 1:end] |> x -> vcat(x...) |> shuffle
 
-xx = shape_data["obs"][end - num_test + 1:end] |> x -> vcat(x...)
+xx = cube_data["obs"][end - num_test + 1:end] |> x -> vcat(x...)
 
 to_img(x) = colorview(RGB, permutedims(x, [3,1,2]))
 
@@ -158,7 +157,7 @@ opt = ADAM()
 s = Stateful(TriangleExp(λ0=0.00001, λ1=0.002, period=10, γ=0.96))
 # plot(s.schedule.(0:100))
 ##
-KL, LogQP, R = train(model, [x_train, x_test], 15, opt,
+KL, LogQP, R = train(model, [x_train, x_test], 5, opt,
                      hps=hp, schedule_lr=true, scd=s,)
 
 plot(vcat(KL...))
@@ -186,7 +185,7 @@ encoder_μ, encoder_logvar, decoder = modl
 z, μ, logvar = sample_latent(modl[1:2]..., xx[2], dev=cpu)
 pred = decoder(z)
 ##
-y = pred[:,:,:,2]
+y = pred[:,:,:,1]
 yimg = colorview(RGB, permutedims(y, [3,1,2]))
 plot(yimg)
 
@@ -202,16 +201,23 @@ BSON.@save "saved_models/shapes_cvae_z64_6eps_adam_cycled_beta20_v.bson" modl
 ##
 
 plot(z')
-
-modelpath = "saved_models/cubes_cvae_z32_5eps_adam_0001_beta1_5.bson"
+modelpath = "saved_models/cubes_cvae_z128_50eps_adam_cycled_beta20_v.bson"
 BSON.@load modelpath modl
 
-model |> cpu
+model = modl |> gpu
 
 modl = model |> cpu
 encoder_μ, encoder_logvar, decoder = modl
 z, μ, logvar = sample_latent(modl[1:2]..., xx[2], dev=cpu)
 pred = decoder(z)
-y = pred[:,:,:,3]
-yimg = colorview(RGB, permutedims(y, [3,1,2]))
-p = plot(yimg)
+
+slices = [colorview(RGB, permutedims(pred[:,:,:,k], [3,1,2])) for k in 1:32]
+
+xslices = [colorview(RGB, permutedims(x_test[2][:,:,:,k], [3,1,2])) for k in 1:32]
+
+l = @layout [a ; b]
+
+
+quick_anim(permutedims(Flux.stack(slices, 3), [3,1,2]))
+quick_anim(permutedims(Flux.stack(xslices, 3), [3,1,2]), savestring="original_cubes.gif")
+
