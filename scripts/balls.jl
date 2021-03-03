@@ -61,9 +61,6 @@ xtrain_seq = x_train
 
 xtrain_seq[1]
 
-heatmap(dropmean(xtrain_seq[1][:,:,:,1], 3))
-
-
 x_test = @as xs img_data["test_x"] begin
     process_data(xs, args.batchsize)
     [Array(x) for x in xs]
@@ -117,20 +114,9 @@ end
         # kls, logps, regs = [], [], []
         stop_training = false
 
-        @time loss, vlosses, stop_training = train_epoch(
+        @time vlosses, stop_training = train_epoch(
             model, opt, ps, train_data, hps,
             epoch=epoch, stop_training=stop_training)
-
-
-        if isnan(loss)
-            println("NaN encountered")
-            break
-        end
-        if stop_training
-            println("Zero KL")
-            stop_training = false
-            break
-        end
 
         push!(KL, vlosses[1])
         push!(LogQP, vlosses[2])
@@ -171,12 +157,21 @@ function train_epoch(model, opt, ps, train_data, hps; epoch=1, dev=gpu, stop_tra
             end
             -logp + klqp + reg
         end
+        if isnan(loss)
+            println("NaN encountered")
+            break
+        end
+        if stop_training
+            println("Zero KL")
+            stop_training = false
+            break
+        end
         x = nothing
         gradients = back(1f0)
         Flux.update!(opt, ps, gradients)
         ProgressMeter.next!(progress_tracker, showvalues=[(:loss, loss)])
     end
-    return loss, [kls, logps, regs], stop_training
+    return [kls, logps, regs], stop_training
 
 end
 
@@ -193,12 +188,12 @@ hp = Dict(
     :filename => "balls_16_triexp_sched",
 )
 
-opt = ADAM(0.01)
+opt = ADAM()
 
 s = Stateful(TriangleExp(λ0=0.00001, λ1=0.002, period=10, γ=0.96))
 # plot(s.schedule.(0:100))
 ##
-KL, LogQP, R = train(model, [x_train, x_test], 4, opt,
+KL, LogQP, R = train(model, [xtrain_seq, x_test], 4, opt,
                      hps=hp, schedule_lr=true, scd=s,)
 
 
@@ -243,16 +238,33 @@ using BSON
 BSON.@save "saved_models/balls_cvae_z64_6eps_adam_cycled_beta20_BEST.bson" modl
 
 ##
-# modelpath = "saved_models/cubes_cvae_z32_5eps_adam_0001_beta1_5.bson"
-# BSON.@load modelpath modl
+modelpath = "saved_models/balls_cvae_z64_6eps_adam_cycled_beta20_BEST.bson"
+BSON.@load modelpath modl
+
+xtrain_seq
 
 modl = model |> cpu
 encoder_μ, encoder_logvar, decoder = modl
-z, μ, logvar = sample_latent(modl[1:2]..., xx[2], dev=cpu)
+z, μ, logvar = sample_latent(modl[1:2]..., xtrain_seq[3], dev=cpu)
 pred = decoder(z)
-y = pred[:,:,:,3]
+y = pred[:,:,:,1]
 yimg = colorview(RGB, permutedims(y, [3,1,2]))
 p = plot(yimg)
+
+function get_img(k)
+    z, μ, logvar = sample_latent(modl[1:2]..., xtrain_seq[k], dev=cpu)
+    pred = decoder(z)
+    y = pred[:,:,:,1]
+    y
+end
+
+
+slices = [colorview(RGB, permutedims(get_img(k), [3,1,2])) for k in 1:20]
+
+xslices = [colorview(RGB, permutedims(x_test[2][:,:,:,k], [3,1,2])) for k in 1:32]
+
+quick_anim(permutedims(Flux.stack(slices, 3), [3,1,2]))
+
 
 ##
 x = vcat(xtrain_seq...)

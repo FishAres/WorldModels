@@ -186,7 +186,7 @@ encoder_μ, encoder_logvar, decoder = modl
 z, μ, logvar = sample_latent(modl[1:2]..., xx[2], dev=cpu)
 pred = decoder(z)
 ##
-y = pred[:,:,:,2]
+y = pred[:,:,:,1]
 yimg = colorview(RGB, permutedims(y, [3,1,2]))
 plot(yimg)
 
@@ -212,6 +212,13 @@ modl = model |> cpu
 encoder_μ, encoder_logvar, decoder = modl
 z, μ, logvar = sample_latent(modl[1:2]..., xx[2], dev=cpu)
 pred = decoder(z)
+
+slices = [colorview(RGB, permutedims(pred[:,:,:,k], [3,1,2])) for k in 1:32]
+
+xslices = [colorview(RGB, permutedims(x_test[2][:,:,:,k], [3,1,2])) for k in 1:32]
+quick_anim(permutedims(Flux.stack(slices, 3), [3,1,2]), savestring="shapes_vae.gif")
+quick_anim(permutedims(Flux.stack(xslices, 3), [3,1,2]), savestring="shapes_original.gif")
+
 y = pred[:,:,:,3]
 yimg = colorview(RGB, permutedims(y, [3,1,2]))
 p = plot(yimg)
