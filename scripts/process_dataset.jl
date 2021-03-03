@@ -17,7 +17,7 @@ def load_list_dict_h5py(fname):
     return array_dict
 """
 
-data = py"load_list_dict_h5py"("data/exp_raw/pong_train.h5")
+data = py"load_list_dict_h5py"("data/exp_raw/balls_train_denser_long.h5")
 
 function process_obs(data, key, batchsize; keepseq=false)
     obs = map(x -> Float32.(x[key][:,1:3,:,:,:]), data)
@@ -51,5 +51,12 @@ function process_data(datafile, batchsize, savestring)
     return data_out
 end
 
-cube_data = process_data(datadir("exp_raw", "cubes_train.h5"), 32, "cubes_train")
-@save datadir("exp_pro", "cube_train.jld2") cube_data
+# cube_data = process_data(datadir("exp_raw", "cubes_train.h5"), 32, "cubes_train")
+# @save datadir("exp_pro", "cube_train.jld2") cube_data
+
+ball_data = process_data(ddir, 32, "balls_train")
+@save datadir("exp_pro", "balls_train.jld2") ball_data
+
+datadir("exp_raw", "balls_train_denser_long.h5")
+
+ddir = "data/exp_raw/balls_train_denser_long.h5"

@@ -7,7 +7,7 @@ using Parameters:@with_kw
 using Plots
 using Lazy:@as
 
-plotlyjs()
+gr()
 
 theme(:juno)
 
