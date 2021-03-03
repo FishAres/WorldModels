@@ -14,7 +14,7 @@ theme(:juno)
 includet(srcdir("utils.jl"))
 includet(srcdir("cvae.jl"))
 
-# action_data = h5open(datadir("exp_raw", "ball2.h5"))
+# data = h5open(datadir("exp_raw", "balls_train.h5"))
 img_data = npzread(datadir("exp_raw", "balls_train_denser_long.h5.npz"))
 
 using Flux, Zygote
@@ -25,6 +25,7 @@ CUDA.allowscalar(false)
 
 using Base.Iterators:partition
 using ProgressMeter: Progress, next!
+using ProgressMeter
 using .cvae
 
 function process_data(data, batchsize; keepseq=false)
@@ -51,12 +52,22 @@ end
 args = Args()
 
 x_train = @as xs img_data["train_x"] begin
+    process_data(xs, args.batchsize, keepseq=true)
+    [Array(x) for x in xs]
+    # shuffle
+end
+
+xtrain_seq = x_train
+
+x_test = @as xs img_data["test_x"] begin
     process_data(xs, args.batchsize)
     [Array(x) for x in xs]
 end
-x_test = process_data(img_data["test_x"], 2)
 
+using Random:shuffle
+x_train = xx
 
+xt = x_test
 # xx = pong_data["obs"][end - num_test + 1:end] |> x -> vcat(x...)
 using Images
 img = colorview(RGB, permutedims(xx[2][:,:,:,1], [3,1,2]));
@@ -88,7 +99,7 @@ end
     hps=hyperparams,
     schedule_lr=false,
     scd=Stateful(TriangleExp(λ0=0.001, λ1=0.02, period=10, γ=0.98)))
-
+    # Function begins here
     encoder_μ, encoder_logvar, decoder = model
     ps = Flux.params(encoder_μ, encoder_logvar, decoder)
     train_data, test_data = data
@@ -98,44 +109,27 @@ end
         if schedule_lr
             opt.eta = ParameterSchedulers.next!(scd)
         end
-        kls, logps, regs = [], [], []
+        # kls, logps, regs = [], [], []
         stop_training = false
-        # progress_tracker = Progress(length(data), 1, "Training epoch $epoch:")
-        for (i, x) in enumerate(train_data)
-            x = x |> dev
-            loss, back = pullback(ps) do
-                logp, klqp, reg = vae_loss(
-                    encoder_μ,
-                    encoder_logvar,
-                    decoder, x,
-                    β=hps[:β], λ=hps[:λ])
-                Zygote.ignore() do
-                    if klqp ≈ 0.0f0
-                        stop_training = true
-                    end
-                    push!(kls, klqp |> cpu)
-                    push!(logps, logp |> cpu)
-                    push!(regs, reg |> cpu)
-                end
-                -logp + klqp + reg
-            end
-            if stop_training
-                println("Zero KL")
-                stop_training = false
-                break
-            end
-            # x = nothing
-            gradients = back(1f0)
-            Flux.update!(opt, ps, gradients)
-            if isnan(loss)
-                println("NaN encountered")
-                break
-            end
-            # ProgressMeter.next!(progress_tracker, showvalues=[(:loss, loss)])
+
+        @time loss, vlosses, stop_training = train_epoch(
+            model, opt, ps, train_data, hps,
+            epoch=epoch, stop_training=stop_training)
+
+
+        if isnan(loss)
+            println("NaN encountered")
+            break
         end
-        push!(KL, kls)
-        push!(LogQP, logps)
-        push!(R, regs)
+        if stop_training
+            println("Zero KL")
+            stop_training = false
+            break
+        end
+
+        push!(KL, vlosses[1])
+        push!(LogQP, vlosses[2])
+        push!(R, vlosses[3])
         # Test Loss
         test_loss = test(model, test_data, hps=hps, dev=dev)
         @info ("Epoch $(s.state) loss: $test_loss")
@@ -144,12 +138,45 @@ end
             plot_output(model, x_test[2], hps[:filename], scd.state)
         end
     end
+
     println("Training done!")
     return KL, LogQP, R
 end
 
+function train_epoch(model, opt, ps, train_data, hps; epoch=1, dev=gpu, stop_training=false)
+    kls, logps, regs = [], [], []
+    progress_tracker = Progress(length(train_data), 1, "Training epoch $epoch:")
+    encoder_μ, encoder_logvar, decoder = model
+    for (i, x) in enumerate(train_data)
+        x = x |> dev
+        loss, back = pullback(ps) do
+            logp, klqp, reg = vae_loss(
+                encoder_μ,
+                encoder_logvar,
+                decoder, x,
+                β=hps[:β], λ=hps[:λ])
+            Zygote.ignore() do
+                if klqp ≈ 0.0f0
+                    stop_training = true
+                    println("Zero KlQP")
+                end
+                push!(kls, klqp |> cpu)
+                push!(logps, logp |> cpu)
+                push!(regs, reg |> cpu)
+            end
+            -logp + klqp + reg
+        end
+        x = nothing
+        gradients = back(1f0)
+        Flux.update!(opt, ps, gradients)
+        ProgressMeter.next!(progress_tracker, showvalues=[(:loss, loss)])
+    end
+    return loss, [kls, logps, regs], stop_training
+
+end
+
 ##
-args.z = 128
+args.z = 64
 device_reset!(device())
 model = cVAE(args.z) |> gpu
 encoder_μ, encoder_logvar, decoder = model
@@ -158,16 +185,19 @@ encoder_μ, encoder_logvar, decoder = model
 hp = Dict(
     :β => 20.0f0,
     :λ => 0.01f0,
-    :filename => "64_triexp_sched",
+    :filename => "balls_16_triexp_sched",
 )
 
-opt = ADAM()
+opt = ADAM(0.01)
 
 s = Stateful(TriangleExp(λ0=0.00001, λ1=0.002, period=10, γ=0.96))
 # plot(s.schedule.(0:100))
 ##
-KL, LogQP, R = train(model, [x_train, x_test], 15, opt,
+KL, LogQP, R = train(model, [x_train, x_test], 2, opt,
                      hps=hp, schedule_lr=true, scd=s,)
+
+
+loss, vlosses, stop_training = train_epoch(model, opt, Flux.params(encoder_μ, encoder_logvar, decoder), x_train, hp)
 
 plot(vcat(KL...))
 plot(vcat(KL...) - vcat(LogQP...), label="likelihood")
@@ -191,10 +221,10 @@ plot_output(model, xx[2], "tempus", 1, ind=3)
 ##
 modl = model |> cpu
 encoder_μ, encoder_logvar, decoder = modl
-z, μ, logvar = sample_latent(modl[1:2]..., xx[2], dev=cpu)
+z, μ, logvar = sample_latent(modl[1:2]..., x_train[1], dev=cpu)
 pred = decoder(z)
 ##
-y = pred[:,:,:,11]
+y = pred[:,:,:,1]
 yimg = colorview(RGB, permutedims(y, [3,1,2]))
 plot(yimg)
 
@@ -205,7 +235,7 @@ plot(img)
 
 ##
 using BSON
-BSON.@save "saved_models/cubes_cvae_z128_50eps_adam_cycled_beta20_v.bson" modl
+BSON.@save "saved_models/balls_cvae_z16_4eps_adam_cycled_beta20_v.bson" modl
 
 ##
 
@@ -223,3 +253,5 @@ pred = decoder(z)
 y = pred[:,:,:,3]
 yimg = colorview(RGB, permutedims(y, [3,1,2]))
 p = plot(yimg)
+
+x_train[1]
