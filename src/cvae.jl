@@ -21,8 +21,8 @@ Flux.@functor Reshape ()
 function cVAE(z)
     encoder = Chain(
         Conv((4, 4), 3 => 16, relu, stride=(2, 2)),
-        Conv((4, 4), 16 => 128, relu, stride=(2, 2)),
-        Conv((4, 4), 128 => 128, relu, stride=(2, 2)),
+        Conv((4, 4), 16 => 32, relu, stride=(2, 2)),
+        Conv((4, 4), 32 => 128, relu, stride=(2, 2)),
         Flux.flatten,
         Dense(2048, 256, relu)
     )
@@ -50,22 +50,25 @@ end
 function sample_latent(encoder_μ, encoder_logvar, x; dev=gpu)
     μ = encoder_μ(x)
     logvar = encoder_logvar(x)
-    z = μ + dev(randn(Float32, size(μ))) .* exp.(0.5f0 * logvar)
+    z = μ + dev(0.1f0 * randn(Float32, size(μ))) .* exp.(logvar)
     return z, μ, logvar
 end
 
-function vae_loss(encoder_μ, encoder_logvar, decoder, x; λ=0.01f0)
+function vae_loss(encoder_μ, encoder_logvar, decoder, x; β=1.0f0, λ=0.01f0)
     batchsize = size(x)[end]
     z, μ, logvar = sample_latent(encoder_μ, encoder_logvar, x)
     x̂ = decoder(z)
     # reconstruction loss
-    logp_xz = -(Flux.binarycrossentropy(x̂, x, agg=sum))  / batchsize
+    logp_xz = -(Flux.binarycrossentropy(x̂,
+     x, agg=sum))  / batchsize
     # kldiv loss
-    kl_qp = 0.5f0 * sum(@. (exp(2f0 * logvar) + μ^2 - 2f0 * logvar - 1f0)) / batchsize
+    kl_qp = β * sum(@. (exp(2f0 * logvar) + μ^2 - 2f0 * logvar - 1f0)) / batchsize
     # weight regularizxation (L2 norm)
     reg = λ * norm(Flux.params(decoder))
-    elbo = -logp_xz + kl_qp
-    return elbo + reg
+    # elbo = -logp_xz + kl_qp
+    # return elbo + reg
+    return logp_xz, kl_qp, reg
+
 end
 
 

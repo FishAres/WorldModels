@@ -20,3 +20,7 @@ Reshape(args...) = Reshape(args)
 (r::Reshape)(x) = reshape(x, r.shape)
 Flux.@functor Reshape ()
 
+## squeeze mean
+
+"Mean but drops the dimension it operates on"
+dropmean(x, dim) = dropdims(mean(x, dims=dim), dims=dim)

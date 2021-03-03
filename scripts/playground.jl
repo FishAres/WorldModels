@@ -7,20 +7,20 @@ using Parameters:@with_kw
 using Plots
 using Lazy:@as
 
-# plotlyjs()
+plotlyjs()
 
 theme(:juno)
 
 includet(srcdir("utils.jl"))
 includet(srcdir("cvae.jl"))
 
-action_data = h5open(datadir("exp_raw", "ball2.h5"))
-img_data = npzread(datadir("exp_raw", "ball2.h5.npz"))
+# action_data = h5open(datadir("exp_raw", "ball2.h5"))
+img_data = npzread(datadir("exp_raw", "balls_train_denser_long.h5.npz"))
 
 using Flux, Zygote
 using Flux:stack, update!
 using CUDA
-device!(2)
+device!(0)
 CUDA.allowscalar(false)
 
 using Base.Iterators:partition
@@ -86,16 +86,16 @@ end
 xs = [Array(x) for x in x_train]
 ##
 
-args.z = 3
+args.z = 8
 device_reset!(device())
-# model = cVAE(args.z) |> gpu
+model = cVAE(args.z) |> gpu
 
-using BSON
-BSON.@load "saved_models/cvae_adam001_z8.bson" modl
-model = modl |> gpu
+# using BSON
+# BSON.@load "saved_models/cvae_adam001_z8.bson" modl
+# model = modl |> gpu
 
 opt = ADAM(0.01)
-# train(model, xs, 20, opt)
+train(model, xs, 20, opt)
 
 
 ##
@@ -160,9 +160,9 @@ zRNN = Chain(
     Dense(args.z, 128, relu),
     RNN(128, 64),
     Dense(64, args.z),
-    # x -> tanh.(x),
-    # Dense(args.z, args.z),
-    x -> 3.0f0 * sin.(x) .+ 1.0f0,
+    x -> tanh.(x),
+    Dense(args.z, args.z),
+    # x -> 3.0f0 * sin.(x) .+ 1.0f0,
 ) |> gpu
 
 norm1(x) = sum(abs2, x)
@@ -211,6 +211,8 @@ end
 train_rnn(zRNN, decoder, zip(Xs, Ys), 1, opt)
 ##
 
+x = Xs[1]
+y = Y[1]
 function sample(net, x; len=10, dev=gpu)
     batchsize = size(x)[end]
     y = net(x) # .+ 0.01f0 * dev(randn(8, batchsize))
@@ -244,8 +246,6 @@ quick_anim(permutedims(preds[:,:,:,1], [3,1,2]))
 
 encoder_μ, encoder_logvar, decoder =  model
 
-
-
 rnn = cpu(zRNN)
 # BSON.@save "saved_models/rnn_adam001_128_32_adjustout_noise001_sin2.bson" rnn
 
@@ -254,20 +254,25 @@ zRNN
 Xs[1][1]
 
 decoder.(sample(zRNN, Xs[1][1]))
-
+using Flux
+x, y = Xs[1], Ys[1]
 rnn_loss(zRNN, decoder, x, y)
 
 loss, back = pullback(ps) do
     rnn_loss(zRNN, decoder, x, y)
 end
 
-
-opt = ADAM(0.01)
+length(ps)
+gradients.opt = ADAM(0.01)
 gradients = back(1f0)
 Flux.update!(opt, ps, gradients)
 
 ps = Flux.params(zRNN)
 
-x, y = Xs[1], Ys[1]
+
 
 length(ps)
+
+img_data["test_x"]
+
+quick_anim(dropmean(img_data["test_x"], 5)[2,:,:,:])
