@@ -17,6 +17,9 @@ includet(srcdir("cvae.jl"))
 # data = h5open(datadir("exp_raw", "balls_train.h5"))
 img_data = npzread(datadir("exp_raw", "balls_train_denser_long.h5.npz"))
 
+a = img_data["train_x"]
+
+heatmap(Float32.(a[1,1,:,:,1]))
 using Flux, Zygote
 using Flux:stack, update!
 using CUDA
@@ -31,7 +34,7 @@ using .cvae
 function process_data(data, batchsize; keepseq=false)
     data = Float32.(data)
     # cat(normalize.(collect(eachslice(xs[1], dims=4)))..., dims=4)
-    data[data .> 0.0] .= 1.0f0
+    # data[data .> 0.0] .= 1.0f0
     x = @as data begin
     map(x -> stack(x, 5), partition(eachslice(data, dims=1), batchsize))
     map(x -> collect(eachslice(x, dims=1)), data)
@@ -51,15 +54,19 @@ end
 
 args = Args()
 
-x_train = @as xs img_data["train_x"] begin
-    process_data(xs, args.batchsize, keepseq=true)
+x_train = begin
+    xtrain = img_data["train_x"]
+    xs = process_data(xtrain, args.batchsize, keepseq=false)
     [Array(x) for x in xs]
     # shuffle
 end
 
+
+
 xtrain_seq = x_train
 
-xtrain_seq[1]
+x_train[1]
+heatmap(dropmean(xtrain_seq[1][1][:,:,:,1], 3))
 
 x_test = @as xs img_data["test_x"] begin
     process_data(xs, args.batchsize)
@@ -193,7 +200,7 @@ opt = ADAM()
 s = Stateful(TriangleExp(λ0=0.00001, λ1=0.002, period=10, γ=0.96))
 # plot(s.schedule.(0:100))
 ##
-KL, LogQP, R = train(model, [xtrain_seq, x_test], 4, opt,
+KL, LogQP, R = train(model, [x_train, x_test], 2, opt,
                      hps=hp, schedule_lr=true, scd=s,)
 
 
@@ -221,7 +228,7 @@ plot_output(model, xx[2], "tempus", 1, ind=3)
 ##
 modl = model |> cpu
 encoder_μ, encoder_logvar, decoder = modl
-z, μ, logvar = sample_latent(modl[1:2]..., xtrain_seq[1][2], dev=cpu)
+z, μ, logvar = sample_latent(modl[1:2]..., xtrain_seq[1][1], dev=cpu)
 pred = decoder(z)
 ##
 y = pred[:,:,:,1]
@@ -252,7 +259,7 @@ yimg = colorview(RGB, permutedims(y, [3,1,2]))
 p = plot(yimg)
 
 function get_img(k)
-    z, μ, logvar = sample_latent(modl[1:2]..., xtrain_seq[k], dev=cpu)
+    z, μ, logvar = sample_latent(modl[1:2]..., xtrain_seq[2][k], dev=cpu)
     pred = decoder(z)
     y = pred[:,:,:,1]
     y
